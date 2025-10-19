@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "es5",
+    "module": "none",
+    "outFile": "build/index.js",
+    "removeComments": true,
+    "strict": false,
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/main.ts"
+  ]
+}

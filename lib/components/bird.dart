@@ -1,85 +1,115 @@
 import 'package:flame/collisions.dart';
 import 'package:flame/components.dart';
-import 'package:flame_audio/flame_audio.dart';
 import 'package:flutter_flappy_bird/components/ground.dart';
 import 'package:flutter_flappy_bird/components/pipe.dart';
 import 'package:flutter_flappy_bird/constants.dart';
 import 'package:flutter_flappy_bird/game.dart';
 
-class Bird extends SpriteComponent with CollisionCallbacks {
-  //khởi tạo vị trí và kích thước của chim
+class Bird extends SpriteComponent
+    with CollisionCallbacks, HasGameRef<FlappyBirdGame> {
   Bird()
     : super(
         position: Vector2(birdStartX, birdStartY),
         size: Vector2(birdWidth, birdHeight),
       );
-  //Khởi tạo tạo physics(trọng lực)
-  double veloctity = 0;
 
-  /*
-  
-    load
+  double velocity = 0;
+  int lastScoreTime = 0;
 
-
-  */
   @override
   Future<void> onLoad() async {
-    //load bird image
     sprite = await Sprite.load('bird.png');
-
-    //add hit box
     add(RectangleHitbox());
+
+    final screenWidth = gameRef.size.x;
+    final screenHeight = gameRef.size.y;
+    position.x = screenWidth * birdStartXPercent;
+    position.y = screenHeight * birdStartYPercent;
   }
 
-  /*
-  
-    jump / flag
-
-
-  */
   void flap() {
-    veloctity = jumpStrength;
-    FlameAudio.play('wing.mp3');
+    velocity = jumpStrength;
+    gameRef.wingPool.start(volume: 0.7);
+
+    if (!gameRef.isMultiplayer) return;
+
+    if (NetworkConfig.useClientAuthoritative) {
+      _sendPhysicsEvent('PLAYER_FLAP', extra: {});
+    } else {
+      gameRef.nakamaManager.sendFlap(position.y, velocity);
+    }
   }
 
-  /*
-  
-    update
+  void _sendPhysicsEvent(String eventType, {Map<String, dynamic>? extra}) {
+    if (!gameRef.isMultiplayer) return;
 
-  */
+    final normalizedY = normalizeY(position.y, gameRef.size.y);
+
+    final event = {
+      'yNormalized': normalizedY,
+      'velocity': velocity,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      ...?extra,
+    };
+
+    gameRef.nakamaManager.sendPhysicsEvent(eventType, event);
+  }
 
   @override
   void update(double dt) {
-    // Only apply physics when game is playing
-    final game = parent as FlappyBirdGame;
-    if (game.gameState == GameState.playing) {
-      // Apply gravity
-      veloctity += gravity * dt;
-      // Update bird position
-      position.y += veloctity * dt;
-    }
+    super.update(dt);
+    if (gameRef.gameState != GameState.playing) return;
+
+    velocity += gravity * dt;
+    position.y += velocity * dt;
+
+    if (position.y <= 0) _handleDeath();
   }
 
-  /*
-  
-    Collision 
-
-  */
   @override
   void onCollision(Set<Vector2> intersectionPoints, PositionComponent other) {
     super.onCollision(intersectionPoints, other);
+    if (gameRef.gameState != GameState.playing) return;
 
-    final game = parent as FlappyBirdGame;
-    if (game.gameState != GameState.playing) return;
+    if (other is Ground || other is Pipe) _handleDeath();
+  }
 
-    if (other is Ground) {
-      FlameAudio.play('die.mp3');
-      (parent as FlappyBirdGame).gameOver();
+  void _handleDeath() {
+    if (gameRef.isMultiplayer) {
+      if (gameRef.gameState == GameState.playing && gameRef.myAlive) {
+        if (NetworkConfig.useClientAuthoritative) {
+          _sendPhysicsEvent(
+            'PLAYER_DIED',
+            extra: {'finalScore': gameRef.score},
+          );
+        } else {
+          gameRef.nakamaManager.sendDied();
+        }
+        gameRef.enterSpectatorMode();
+      }
+    } else {
+      gameRef.gameOver();
     }
+  }
 
-    if (other is Pipe) {
-      FlameAudio.play('hit.mp3');
-      (parent as FlappyBirdGame).gameOver();
+  void onPipePassed(int pipeId) {
+    if (!gameRef.isMultiplayer ||
+        gameRef.gameState != GameState.playing ||
+        !gameRef.myAlive)
+      return;
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (lastScoreTime > 0 &&
+        (now - lastScoreTime) < NetworkConfig.minScoreIntervalMs) {
+      return;
+    }
+    lastScoreTime = now;
+
+    if (NetworkConfig.useClientAuthoritative) {
+      _sendPhysicsEvent(
+        'PLAYER_SCORED',
+        extra: {'score': gameRef.score, 'pipeId': pipeId},
+      );
     }
   }
 }
